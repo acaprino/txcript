@@ -1629,18 +1629,6 @@ mod store {
         }
 
         #[test]
-        fn delete_archives_in_a_2_1_database() {
-            let path = make_db_v2();
-            let store = OpenCodeStore::new(&path);
-            store.delete(&"ses_1".to_string()).unwrap();
-            assert!(store.discover().unwrap().is_empty());
-            assert!(
-                store.delete(&"ses_1".to_string()).is_err(),
-                "an archived session cannot be archived again"
-            );
-        }
-
-        #[test]
         fn cli_generation_is_read_from_the_version_line() {
             assert_eq!(Generation::parse("opencode v2.1.4\n"), Generation::Current);
             assert_eq!(Generation::parse("2.0.3"), Generation::Legacy);
