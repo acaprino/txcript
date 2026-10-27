@@ -13,7 +13,7 @@ mod codex_pairing;
 
 use chrono::{DateTime, Utc};
 use txcript::common::{Block, Message, Meta, Role, Tool, ToolOutput};
-use txcript::harness::{claude_code, codex, grok};
+use txcript::harness::{claude_code, codex, grok, opencode};
 use txcript::{Codec, HarnessId, Store, TextCodec, Transcript};
 
 #[cfg(feature = "search")]
@@ -100,6 +100,53 @@ fn opencode_refuses_a_root_override_instead_of_importing_live() {
         leftovers.is_empty(),
         "nothing may be written to the out dir"
     );
+}
+
+/// Fixed for issue #96. `OpenCode` 2.1 rejected everything the harness wrote:
+/// `continue --with opencode` ran `opencode import`, a command 2.1 no longer
+/// has (`Unexpected positional argument`), and the staged `{info, parts}`
+/// export failed the new importer's schema — `Missing key at
+/// ["info"]["projectID"]`, then `Expected Session.Message.Info at
+/// ["messages"][0]`. The text form is now the 2.1 document: flat records
+/// under a header with `projectID`, `cost`, `tokens`, `time` and `location`.
+/// (`tests/integration/opencode.rs` covers the full mapping and the 2.1
+/// database layout, which `txcript list` used to miss entirely.)
+#[test]
+fn opencode_text_form_is_the_document_the_2_1_importer_accepts() {
+    let common = Transcript::new(
+        meta("ses_opencode21"),
+        vec![
+            msg(
+                Role::User,
+                vec![Block::Text {
+                    text: "hello".to_string(),
+                }],
+                0,
+            ),
+            msg(
+                Role::Assistant,
+                vec![Block::Text {
+                    text: "hi".to_string(),
+                }],
+                1,
+            ),
+        ],
+    );
+    let native = opencode::OpenCode::from_common(&common).unwrap();
+    let text = opencode::OpenCode::to_text(&native).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+    for key in ["projectID", "cost", "tokens", "time", "location"] {
+        assert!(doc["info"].get(key).is_some(), "the header needs `{key}`");
+    }
+    for record in doc["messages"].as_array().unwrap() {
+        assert!(
+            record.get("type").is_some() && record.get("parts").is_none(),
+            "a 2.1 message is one flat record: {record}"
+        );
+    }
+    let back =
+        opencode::OpenCode::to_common(&opencode::OpenCode::from_text(&text).unwrap()).unwrap();
+    assert_eq!(back.body.len(), 2);
 }
 
 /// Fixed in d5f5606 ("Anchor the Claude Code summary line to a real leaf").

@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use serde_json::json;
 use txcript::common;
 use txcript::harness::opencode;
-use txcript::{Codec, Common, Transcript};
+use txcript::{Codec, Common, TextCodec, Transcript};
 
 fn ts(s: &str) -> DateTime<Utc> {
     s.parse().unwrap()
@@ -445,4 +445,162 @@ fn custom_and_mcp_tool_names_preserve_exact_casing() {
             other => panic!("expected Tool::Raw, got {other:?}"),
         }
     }
+}
+
+/// The flat document `opencode session export` writes since 2.1: the
+/// conversation of the 2.0 export above, plus the `idle` marker 2.1 records
+/// when a turn ends.
+fn export_2_1() -> serde_json::Value {
+    let tokens = json!({ "input": 6, "output": 88, "reasoning": 0, "cache": { "read": 10, "write": 21428 } });
+    json!({
+        "info": {
+            "id": "ses_1",
+            "projectID": "global",
+            "cost": 0,
+            "tokens": tokens,
+            "time": { "created": 1_778_834_704_515_i64, "updated": 1_778_834_704_570_i64 },
+            "title": "Demo",
+            "location": { "directory": "/repo" },
+            "model": { "id": "claude-opus-4-7", "providerID": "anthropic" },
+        },
+        "messages": [
+            {
+                "id": "msg_u", "type": "user", "text": "please edit the file",
+                "time": { "created": 1_778_834_704_520_i64 },
+            },
+            {
+                "id": "msg_a", "type": "assistant", "agent": "build",
+                "model": { "id": "claude-opus-4-7", "providerID": "anthropic" },
+                "finish": "stop", "cost": 0, "tokens": tokens,
+                "time": { "created": 1_778_834_704_540_i64, "completed": 1_778_834_704_560_i64 },
+                "content": [
+                    { "type": "reasoning", "text": "thinking about it" },
+                    { "type": "text", "text": "On it." },
+                    { "type": "tool", "id": "call-1", "name": "edit",
+                      "time": { "created": 1_778_834_704_545_i64, "completed": 1_778_834_704_550_i64 },
+                      "state": {
+                          "status": "completed",
+                          "input": { "filePath": "/repo/a.rs", "oldString": "old", "newString": "new" },
+                          "content": [{ "type": "text", "text": "done" }] } },
+                    { "type": "text", "text": "Finished the edit." },
+                ],
+            },
+            { "id": "msg_i", "type": "idle", "outcome": "succeeded", "time": { "created": 1_778_834_704_570_i64 } },
+        ],
+    })
+}
+
+#[test]
+fn from_text_reads_the_2_1_export_document() {
+    let native = opencode::OpenCode::from_text(&export_2_1().to_string()).unwrap();
+    assert_eq!(native.meta.id, "ses_1");
+    assert_eq!(native.meta.cwd.as_deref(), Some("/repo"));
+    assert_eq!(native.meta.title.as_deref(), Some("Demo"));
+    assert_eq!(native.meta.model.as_deref(), Some("claude-opus-4-7"));
+
+    let msgs = opencode::OpenCode::to_common(&native).unwrap().body;
+    // user | assistant(reasoning+text) | assistant(ToolUse) | user(ToolResult) | assistant(text)
+    assert_eq!(msgs.len(), 5);
+    assert!(
+        matches!(&msgs[0].content[0], common::Block::Text { text } if text == "please edit the file")
+    );
+    assert!(
+        matches!(&msgs[1].content[0], common::Block::Thinking { text, .. } if text == "thinking about it")
+    );
+    assert!(matches!(
+        &msgs[2].content[0],
+        common::Block::ToolUse { id, tool: common::Tool::Edit { file_path, .. } }
+            if id == "call-1" && file_path == "/repo/a.rs"
+    ));
+    assert!(matches!(
+        &msgs[3].content[0],
+        common::Block::ToolResult { tool_use_id, content: common::ToolOutput::Text(t), is_error: false }
+            if tool_use_id == "call-1" && t == "done"
+    ));
+    assert_eq!(msgs[4].stop_reason, Some(common::StopReason::EndTurn));
+    assert_eq!(
+        msgs[4].usage.unwrap().cache_creation_input_tokens,
+        Some(21428)
+    );
+}
+
+#[test]
+fn to_text_writes_the_2_1_document_and_reads_it_back() {
+    let common = sample_common();
+    let native = opencode::OpenCode::from_common(&common).unwrap();
+    let text = opencode::OpenCode::to_text(&native).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+    // The header carries what 2.1's importer validates.
+    let info = &doc["info"];
+    assert_eq!(info["id"], "ses_1");
+    assert_eq!(info["projectID"], "global");
+    assert_eq!(info["cost"], 0.0);
+    assert_eq!(info["tokens"]["cache"]["read"], 0);
+    assert_eq!(info["location"]["directory"], "/repo");
+    assert_eq!(info["title"], "Demo");
+    assert_eq!(info["model"]["id"], "claude-opus-4-7");
+    assert!(
+        info.get("directory").is_none(),
+        "the 2.0 spelling stays out of the 2.1 header"
+    );
+
+    // Messages are flat records, not `{info, parts}` pairs.
+    let messages = doc["messages"].as_array().unwrap();
+    assert_eq!(messages[0]["type"], "user");
+    assert_eq!(messages[0]["text"], "edit it");
+    assert!(messages[0].get("parts").is_none());
+    assert!(
+        messages
+            .iter()
+            .all(|m| m["id"].as_str().unwrap().starts_with("msg_"))
+    );
+    let tool_turn = messages
+        .iter()
+        .find(|m| {
+            m["content"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|item| item["type"] == "tool"))
+        })
+        .unwrap();
+    assert_eq!(tool_turn["finish"], "tool-calls");
+    let tool = tool_turn["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "tool")
+        .unwrap();
+    assert_eq!(tool["name"], "edit");
+    assert_eq!(tool["id"], "call-1");
+    assert_eq!(tool["state"]["status"], "completed");
+    assert_eq!(tool["state"]["input"]["filePath"], "/repo/a.rs");
+    assert_eq!(tool["state"]["content"][0]["text"], "done");
+
+    // And the document reads back to the same conversation. The 2.1 header
+    // has no slot for the CLI version (the importer stamps its own), so that
+    // is the one `Meta` field a text round-trip cannot keep.
+    let back =
+        opencode::OpenCode::to_common(&opencode::OpenCode::from_text(&text).unwrap()).unwrap();
+    assert_eq!(common.body, back.body);
+    assert_eq!(back.meta.id, common.meta.id);
+    assert_eq!(back.meta.cwd, common.meta.cwd);
+    assert_eq!(back.meta.title, common.meta.title);
+    assert_eq!(back.meta.model, common.meta.model);
+    assert_eq!(back.meta.cli_version, None);
+}
+
+#[test]
+fn from_text_still_reads_the_2_0_export() {
+    let export = json!({
+        "info": { "id": "ses_1", "directory": "/repo", "title": "Demo",
+                  "time": { "created": 1_778_834_704_515_i64 } },
+        "messages": [{
+            "info": { "role": "user", "time": { "created": 1_778_834_704_520_i64 } },
+            "parts": [{ "type": "text", "text": "hello" }],
+        }],
+    });
+    let native = opencode::OpenCode::from_text(&export.to_string()).unwrap();
+    assert_eq!(native.meta.cwd.as_deref(), Some("/repo"));
+    let msgs = opencode::OpenCode::to_common(&native).unwrap().body;
+    assert!(matches!(&msgs[0].content[0], common::Block::Text { text } if text == "hello"));
 }
