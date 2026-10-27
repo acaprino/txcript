@@ -252,13 +252,14 @@ fn tool_from_part(part: &Value, created: i64) -> Option<Value> {
         .and_then(|s| s.get("status"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    // 2.1 requires an object input; anything else is wrapped the way the
-    // Claude Code writer wraps freeform tool text.
+    // 2.1 requires an object input; anything else is kept, wrapped as
+    // `{ "input": <value> }`.
     let input = match state.and_then(|s| s.get("input")) {
         Some(Value::Object(obj)) => Value::Object(obj.clone()),
         Some(Value::Null) | None => Value::Object(Map::new()),
         Some(other) => json!({ "input": other }),
     };
+    let (name, input) = tool_to_v2(name, input);
     let started = millis(
         state
             .and_then(|s| s.get("time"))
@@ -309,6 +310,77 @@ fn tool_from_part(part: &Value, created: i64) -> Option<Value> {
         "state": state_v2,
         "time": Value::Object(time),
     }))
+}
+
+/// A built-in tool 2.1 renamed, or whose input keys it renamed: the name the
+/// codec writes, the 2.1 name, and the input keys as `(codec key, 2.1 key)`.
+type ToolRename = (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+);
+
+/// Every [`ToolRename`] (`packages/core/src/tool/plugin/*.ts`). Keys not
+/// listed are kept, so a call survives a round trip unchanged.
+const TOOLS_2_1: &[ToolRename] = &[
+    (
+        "bash",
+        "shell",
+        &[
+            ("timeout_ms", "timeout"),
+            ("run_in_background", "background"),
+        ],
+    ),
+    ("read", "read", &[("filePath", "path")]),
+    ("edit", "edit", &[("filePath", "path")]),
+    ("write", "write", &[("filePath", "path")]),
+    (
+        "grep",
+        "grep",
+        &[("glob", "include"), ("head_limit", "limit")],
+    ),
+    ("task", "subagent", &[("subagent_type", "agent")]),
+    ("Skill", "skill", &[("skill", "id")]),
+    ("WebSearch", "websearch", &[]),
+];
+
+/// The 2.1 name and input of a tool call the codec names the 2.0 way.
+fn tool_to_v2(name: &str, input: Value) -> (String, Value) {
+    let Some((_, v2_name, keys)) = TOOLS_2_1.iter().find(|(legacy, ..)| *legacy == name) else {
+        return (name.to_string(), input);
+    };
+    let mut input = super::rename_keys(input, keys);
+    // grep's case switch is inverted: `-i` means insensitive, 2.1's
+    // `caseSensitive` the opposite.
+    if *v2_name == "grep" {
+        flip_flag(&mut input, "-i", "caseSensitive");
+    }
+    ((*v2_name).to_string(), input)
+}
+
+/// The codec's name and input of a 2.1 tool call; the inverse of
+/// [`tool_to_v2`].
+fn tool_from_v2(name: &str, input: Value) -> (String, Value) {
+    let Some((legacy, _, keys)) = TOOLS_2_1.iter().find(|(_, v2_name, _)| *v2_name == name) else {
+        return (name.to_string(), input);
+    };
+    let reversed: Vec<(&str, &str)> = keys.iter().map(|(from, to)| (*to, *from)).collect();
+    let mut input = super::rename_keys(input, &reversed);
+    if name == "grep" {
+        flip_flag(&mut input, "caseSensitive", "-i");
+    }
+    ((*legacy).to_string(), input)
+}
+
+/// Moves a boolean from `from` to `to`, negated; any other value is left in
+/// place.
+fn flip_flag(input: &mut Value, from: &str, to: &str) {
+    if let Value::Object(obj) = input
+        && let Some(Value::Bool(flag)) = obj.get(from).cloned()
+    {
+        obj.remove(from);
+        obj.insert(to.to_string(), Value::Bool(!flag));
+    }
 }
 
 fn attachment_from_part(part: &Value) -> Option<Value> {
@@ -493,6 +565,10 @@ fn part_from_content(item: &Value) -> Option<Map<String, Value>> {
                 .filter(|input| input.is_object())
                 .cloned()
                 .unwrap_or_else(|| Value::Object(Map::new()));
+            let (name, input) = tool_from_v2(
+                item.get("name").and_then(Value::as_str).unwrap_or_default(),
+                input,
+            );
             let mut legacy = Map::new();
             legacy.insert("input".into(), input);
             match status {
@@ -534,10 +610,7 @@ fn part_from_content(item: &Value) -> Option<Map<String, Value>> {
                 }
             }
             part.insert("type".into(), json!("tool"));
-            part.insert(
-                "tool".into(),
-                json!(item.get("name").and_then(Value::as_str).unwrap_or_default()),
-            );
+            part.insert("tool".into(), json!(name));
             part.insert(
                 "callID".into(),
                 json!(item.get("id").and_then(Value::as_str).unwrap_or_default()),
@@ -720,6 +793,101 @@ mod tests {
         assert_eq!(messages[1]["type"], "synthetic");
         assert_eq!(messages[1]["text"], "injected");
         assert!(messages[1]["id"].as_str().unwrap().starts_with("msg_"));
+    }
+
+    #[test]
+    fn tool_names_and_inputs_follow_opencode_2_1() {
+        let cases = [
+            (
+                "bash",
+                json!({ "command": "ls", "timeout_ms": 5000, "run_in_background": true, "description": "list" }),
+                "shell",
+                json!({ "command": "ls", "timeout": 5000, "background": true, "description": "list" }),
+            ),
+            (
+                "read",
+                json!({ "filePath": "/a.rs", "offset": 3 }),
+                "read",
+                json!({ "path": "/a.rs", "offset": 3 }),
+            ),
+            (
+                "edit",
+                json!({ "filePath": "/a.rs", "oldString": "a", "newString": "b" }),
+                "edit",
+                json!({ "path": "/a.rs", "oldString": "a", "newString": "b" }),
+            ),
+            (
+                "grep",
+                json!({ "pattern": "fn", "glob": "*.rs", "-i": true, "head_limit": 5 }),
+                "grep",
+                json!({ "pattern": "fn", "include": "*.rs", "caseSensitive": false, "limit": 5 }),
+            ),
+            (
+                "task",
+                json!({ "subagent_type": "explore", "description": "d", "prompt": "p" }),
+                "subagent",
+                json!({ "agent": "explore", "description": "d", "prompt": "p" }),
+            ),
+            (
+                "Skill",
+                json!({ "skill": "pdf" }),
+                "skill",
+                json!({ "id": "pdf" }),
+            ),
+            (
+                "WebSearch",
+                json!({ "query": "rust" }),
+                "websearch",
+                json!({ "query": "rust" }),
+            ),
+            (
+                "todowrite",
+                json!({ "todos": [] }),
+                "todowrite",
+                json!({ "todos": [] }),
+            ),
+        ];
+        for (legacy, legacy_input, v2_name, v2_input) in cases {
+            assert_eq!(
+                tool_to_v2(legacy, legacy_input.clone()),
+                (v2_name.to_string(), v2_input.clone()),
+                "{legacy} → 2.1"
+            );
+            assert_eq!(
+                tool_from_v2(v2_name, v2_input),
+                (legacy.to_string(), legacy_input),
+                "{v2_name} → codec"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tool_part_is_written_and_read_with_the_2_1_names() {
+        let legacy = Export {
+            info: json!({ "id": "ses_1" }),
+            messages: vec![MessageRecord {
+                info: json!({ "id": "msg_a", "role": "assistant", "modelID": "m", "time": { "created": 5 } }),
+                parts: vec![
+                    json!({ "type": "tool", "tool": "bash", "callID": "c1", "state": {
+                    "status": "completed", "input": { "command": "ls", "run_in_background": true }, "output": "ok" } }),
+                ],
+            }],
+        };
+        let doc = from_legacy(&legacy);
+        let tool = &doc["messages"][0]["content"][0];
+        assert_eq!(tool["name"], "shell");
+        assert_eq!(
+            tool["state"]["input"],
+            json!({ "command": "ls", "background": true })
+        );
+
+        let back = to_legacy(&doc).unwrap();
+        let part = &back.messages[0].parts[0];
+        assert_eq!(part["tool"], "bash");
+        assert_eq!(
+            part["state"]["input"],
+            json!({ "command": "ls", "run_in_background": true })
+        );
     }
 
     #[test]

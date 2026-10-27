@@ -71,9 +71,18 @@ record becomes several Common messages, cut at each tool item; the step-level
 `tokens` and `finish` attach to the step's last assistant message as `Usage`
 and `StopReason` (`stop` → `EndTurn`, `length` → `MaxTokens`, `tool-calls` →
 `ToolUse`, etc.). Lowercase tool names normalize to canonical ones — `edit` →
-`Edit` with `filePath`/`oldString`/`newString` renamed to snake_case — and
+`Edit` with `path`/`oldString`/`newString` renamed to snake_case — and
 unknown tools pass through as `Tool::Raw`. Placeholder titles
 (`New session - …`) are treated as absent.
+
+2.1 renamed some built-in tools and input keys; the 2.1 document uses its
+names and the 2.0 shape keeps the old ones (`TOOLS_2_1` in `v2.rs`): `bash` is
+`shell` (`timeout_ms` → `timeout`, `run_in_background` → `background`), `task`
+is `subagent` (`subagent_type` → `agent`), `Skill` is `skill` (`skill` → `id`),
+`WebSearch` is `websearch`; `read`, `edit` and `write` take `path` for
+`filePath`, and `grep` takes `include` for `glob`, `limit` for `head_limit` and
+`caseSensitive` for the inverse of `-i`. Every other key is kept, so a call
+reads back unchanged.
 
 A synthetic assistant record, shaped like the real thing:
 
@@ -89,7 +98,7 @@ A synthetic assistant record, shaped like the real thing:
     { "type": "tool", "id": "call_1", "name": "edit",
       "time": { "created": 1778834704545, "completed": 1778834704550 },
       "state": { "status": "completed",
-                 "input": { "filePath": "/repo/a.rs", "oldString": "old", "newString": "new" },
+                 "input": { "path": "/repo/a.rs", "oldString": "old", "newString": "new" },
                  "content": [{ "type": "text", "text": "done" }] } },
     { "type": "text", "text": "Renamed it." }
   ]

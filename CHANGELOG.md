@@ -13,7 +13,7 @@ Each release is published to [crates.io](https://crates.io/crates/txcript),
 
 ### Fixed
 
-- Support OpenCode 2.1 ([#96](https://github.com/skillsynchq/txcript/issues/96)): discover and load sessions from its `session_v2`/`session_message` tables, write its flat transcript, and import it with `opencode session import --directory <cwd>`. A 2.0 database still reads, and a 2.0 CLI (found through `opencode --version`) still gets the `{info, parts}` export through `opencode import`. The `opencode` text form — the WASM `convert`/`fromCommon` output — is now the 2.1 document; `from_text` reads both layouts.
+- Support OpenCode 2.1 ([#96](https://github.com/skillsynchq/txcript/issues/96)): discover and load sessions from its `session_v2`/`session_message` tables, write its flat transcript with the 2.1 tool names and input keys (`shell`, `subagent`, `path`, …), and import it with `opencode session import --directory <cwd>`. A 2.0 database still reads, and a 2.0 CLI (found through `opencode --version`) still gets the `{info, parts}` export through `opencode import`. The `opencode` text form — the WASM `convert`/`fromCommon` output — is now the 2.1 document; `from_text` reads both layouts.
 - Resolve a session id that exists in several stores to the most recently modified copy. `view`, `export`, `continue` and `crop` used to load whichever copy the file system listed first; discovery now breaks start-time ties by file mtime.
 
 ### Added

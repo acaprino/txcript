@@ -480,7 +480,7 @@ fn export_2_1() -> serde_json::Value {
                       "time": { "created": 1_778_834_704_545_i64, "completed": 1_778_834_704_550_i64 },
                       "state": {
                           "status": "completed",
-                          "input": { "filePath": "/repo/a.rs", "oldString": "old", "newString": "new" },
+                          "input": { "path": "/repo/a.rs", "oldString": "old", "newString": "new" },
                           "content": [{ "type": "text", "text": "done" }] } },
                     { "type": "text", "text": "Finished the edit." },
                 ],
@@ -573,7 +573,7 @@ fn to_text_writes_the_2_1_document_and_reads_it_back() {
     assert_eq!(tool["name"], "edit");
     assert_eq!(tool["id"], "call-1");
     assert_eq!(tool["state"]["status"], "completed");
-    assert_eq!(tool["state"]["input"]["filePath"], "/repo/a.rs");
+    assert_eq!(tool["state"]["input"]["path"], "/repo/a.rs");
     assert_eq!(tool["state"]["content"][0]["text"], "done");
 
     // And the document reads back to the same conversation. The 2.1 header

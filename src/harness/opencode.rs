@@ -1569,7 +1569,7 @@ mod store {
                     "assistant",
                     2,
                     1_778_834_704_540,
-                    r#"{"agent":"build","model":{"id":"claude-opus-4-7","providerID":"anthropic"},"finish":"stop","cost":0,"tokens":{"input":6,"output":88,"reasoning":0,"cache":{"read":10,"write":21428}},"time":{"created":1778834704540,"completed":1778834704560},"content":[{"type":"reasoning","text":"thinking"},{"type":"text","text":"On it."},{"type":"tool","id":"c1","name":"edit","time":{"created":1778834704545,"completed":1778834704550},"state":{"status":"completed","input":{"filePath":"/repo/a.rs","oldString":"old","newString":"new"},"content":[{"type":"text","text":"done"}]}},{"type":"text","text":"Finished."}]}"#,
+                    r#"{"agent":"build","model":{"id":"claude-opus-4-7","providerID":"anthropic"},"finish":"stop","cost":0,"tokens":{"input":6,"output":88,"reasoning":0,"cache":{"read":10,"write":21428}},"time":{"created":1778834704540,"completed":1778834704560},"content":[{"type":"reasoning","text":"thinking"},{"type":"text","text":"On it."},{"type":"tool","id":"c1","name":"edit","time":{"created":1778834704545,"completed":1778834704550},"state":{"status":"completed","input":{"path":"/repo/a.rs","oldString":"old","newString":"new"},"content":[{"type":"text","text":"done"}]}},{"type":"text","text":"Finished."}]}"#,
                 ),
                 (
                     "msg_i",
